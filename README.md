@@ -33,7 +33,7 @@ This project wraps your existing `index.html` with a small Node.js backend that 
    node server.js
    # or for dev with automatic reload (if you installed nodemon): npx nodemon server.js
    ```
-7. Open your browser to `http://localhost:3000` and try the chatbot in the dashboard. The frontend now POSTs to `/api/chat` which forwards requests to Google securely.
+7. Open your browser to `http://localhost:3000` and try the chatbot in the dashboard. The frontend now POSTs to `/api/chat` which forwards requests to Google securely
 
 ## Troubleshooting
 - If you see `Server not configured` when using the chat, ensure `.env` exists and `GEMINI_KEY` is set.
