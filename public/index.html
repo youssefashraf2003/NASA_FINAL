@@ -1,0 +1,1403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NASA Bioscience Explorer Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap" rel="stylesheet">
+    <style>
+        /* Custom scrollbar for futuristic feel */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #0e1a3a;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #00ffff; /* Neon Cyan */
+            border-radius: 4px;
+        }
+        /* Custom font */
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* Define NASA-inspired color palette via Tailwind configuration */
+        :root {
+            --color-primary-dark: #0e1a3a;
+            --color-primary-light: #1c2b53;
+            --color-accent-cyan: #00ffff;
+            --color-accent-orange: #ff9900;
+        }
+    </style>
+    <script>
+        // Custom Tailwind Configuration for NASA theme
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'primary-dark': 'var(--color-primary-dark)',
+                        'primary-light': 'var(--color-primary-light)',
+                        'accent-cyan': 'var(--color-accent-cyan)',
+                        'accent-orange': 'var(--color-accent-orange)',
+                        'nasa-blue': '#1c2b53',
+                        'nasa-navy': '#0e1a3a',
+                    },
+                    boxShadow: {
+                        'glow-cyan': '0 0 15px rgba(0, 255, 255, 0.4)',
+                        'glow-orange': '0 0 10px rgba(255, 153, 0, 0.5)',
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+
+<body class="bg-nasa-navy text-gray-100 min-h-screen">
+
+    <script type="text/javascript">
+        let currentPage = 'dashboard';
+        let selectedStudyId = null;
+
+        // --- Global variables to hold data fetched from JSON ---
+        let studiesData = [];
+        let metricsData = {};
+    // Search state: only allow searches from this allowedKeywords list
+    let searchKeyword = '';
+    let allowedKeywords = [];
+
+        // --- Core Navigation and Rendering ---
+
+        /**
+         * Changes the application's view state and re-renders the content.
+         * @param {string} page - The page key ('dashboard', 'explore', 'graph', 'insights', 'mission').
+         * @param {number|null} id - Optional study ID for the details page.
+         */
+        async function navigate(page, id = null) {
+            // Make navigation async so we can resolve study image(s) before rendering details
+            currentPage = page;
+            selectedStudyId = id;
+            window.location.hash = id ? `${page}/${id}` : page;
+
+            if (page === 'details' && id) {
+                // ensure the selected study has a resolved image (probes if necessary)
+                await ensureStudyImage(id);
+            }
+
+            renderApp();
+            // safe guard: reset scroll
+            const content = document.getElementById('content-area');
+            if (content) content.scrollTop = 0;
+        }
+
+        /**
+         * Main render function, called on initial load and navigation change.
+         */
+        function renderApp() {
+            const contentArea = document.getElementById('content-area');
+            contentArea.innerHTML = '';
+            document.querySelectorAll('.nav-link').forEach(el => {
+                el.classList.remove('border-b-2', 'border-accent-cyan', 'text-accent-cyan');
+            });
+            const activeNav = document.getElementById(`nav-${currentPage}`);
+            if (activeNav) {
+                activeNav.classList.add('border-b-2', 'border-accent-cyan', 'text-accent-cyan');
+            }
+
+            switch (currentPage) {
+                case 'explore':
+                    contentArea.innerHTML = renderExploreStudies();
+                    attachFilterListeners();
+                    break;
+                case 'details':
+                    contentArea.innerHTML = renderStudyDetails(selectedStudyId);
+                    break;
+                case 'graph':
+                    contentArea.innerHTML = renderKnowledgeGraph();
+                    // build interactive graph after DOM is updated
+                    setTimeout(() => { buildKnowledgeGraph(); }, 50);
+                    break;
+                case 'insights':
+                    contentArea.innerHTML = renderDashboardInsights();
+                    break;
+                case 'mission':
+                    contentArea.innerHTML = renderMissionPlanner();
+                    break;
+                case 'dashboard':
+                default:
+                    currentPage = 'dashboard';
+                    contentArea.innerHTML = renderDashboard();
+            }
+            lucide.createIcons();
+        }
+
+        // --- Component Rendering Functions (Now use metricsData and studiesData) ---
+
+        function getMetricCard(count, title, icon, colorClass = 'text-accent-cyan') {
+            return `
+                <div class="p-6 bg-primary-light rounded-xl shadow-lg transition duration-300 hover:shadow-glow-cyan/50 border border-primary-light/50">
+                    <div class="flex items-center justify-between">
+                        <span class="p-3 rounded-full bg-nasa-navy ${colorClass} text-2xl">
+                            <i data-lucide="${icon}"></i>
+                        </span>
+                        <p class="text-3xl font-bold ${colorClass}">${count}</p>
+                    </div>
+                    <p class="mt-4 text-gray-400 uppercase tracking-wider text-sm">${title}</p>
+                </div>
+            `;
+        }
+
+        function getInsightCard(insight) {
+            let iconColor = 'text-accent-cyan';
+            if (insight.text.includes("Knowledge gap")) iconColor = 'text-accent-orange';
+            if (insight.text.includes("Most studied topic")) iconColor = 'text-green-400';
+
+            return `
+                <div class="p-4 bg-nasa-blue rounded-lg border border-primary-light/50 flex items-start space-x-3 transition duration-300 hover:bg-primary-light">
+                    <i data-lucide="${insight.icon || 'star'}" class="w-5 h-5 ${iconColor} mt-1 flex-shrink-0"></i>
+                    <p class="text-sm">${insight.text}</p>
+                </div>
+            `;
+        }
+
+        function getStudyCard(study) {
+            // UPDATED: Color is now based on study.outcome
+            let outcomeColor = 'bg-accent-cyan/20 text-accent-cyan border-accent-cyan'; // Default for inconclusive
+            if (study.outcome === 'contradictory') {
+                outcomeColor = 'bg-accent-orange/20 text-accent-orange border-accent-orange';
+            } else if (study.outcome === 'positive') {
+                outcomeColor = 'bg-green-400/20 text-green-400 border-green-400';
+            }
+            
+            let icon = study.type === 'human' ? 'user' : study.type === 'plant' ? 'leaf' : 'aperture';
+
+            return `
+                <div class="p-4 bg-primary-light rounded-xl border border-primary-light/50 hover:border-accent-cyan/50 transition duration-200 cursor-pointer" onclick="navigate('details', ${study.id})">
+                    <div class="flex items-start space-x-4">
+                        <div class="w-20 h-14 flex-shrink-0 rounded-md bg-nasa-navy border border-primary-dark overflow-hidden flex items-center justify-center">
+                            <img src="${study.image}" alt="thumb" class="w-full h-full object-cover" onerror="this.style.display='none'" />
+                            <i data-lucide="image" class="w-5 h-5 text-gray-500"></i>
+                        </div>
+                        <div class="flex-1">
+                            <div class="flex justify-between items-start">
+                                <h3 class="text-lg font-semibold text-gray-50 hover:text-accent-cyan transition">${study.title} (${study.year})</h3>
+                                <i data-lucide="${icon}" class="w-5 h-5 text-gray-400 flex-shrink-0 mt-1"></i>
+                            </div>
+                            <p class="text-sm text-gray-300 mt-2">${study.summary}</p>
+                            <div class="mt-3 flex flex-wrap gap-2">
+                                <span class="px-2 py-0.5 text-xs font-medium rounded-full border ${outcomeColor} capitalize">
+                                    ${study.outcome}
+                                </span>
+                            </div>
+                            ${study.pubUrl ? `<div class="mt-3"><a href="${escapeHtml(study.pubUrl)}" rel="noopener noreferrer" target="_blank" class="text-sm inline-flex items-center space-x-1 text-accent-orange hover:underline"><i data-lucide="external-link" class="w-4 h-4"></i><span>Open Publication</span></a></div>` : ''}
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- View: Dashboard ---
+        function renderDashboard() {
+            if (!metricsData.timeline) return '<div>Loading data...</div>'; // Guard against rendering before data is loaded
+            return `
+                <div class="max-w-7xl mx-auto p-4 md:p-8 space-y-10">
+                    <div class="text-center py-12 bg-nasa-blue rounded-2xl shadow-xl border border-primary-light/50">
+                        <h1 class="text-5xl md:text-6xl font-extrabold text-accent-cyan drop-shadow-lg">NASA Bioscience Explorer</h1>
+                        <p class="mt-4 text-xl text-gray-300 max-w-2xl mx-auto">Summarizing ${metricsData.totalStudies} space bioscience studies for discovery, planning, and exploration.</p>
+                        <div class="mt-8 max-w-xl mx-auto px-4">
+                            <div class="flex relative items-center space-x-3">
+                                <i data-lucide="search" class="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5"></i>
+                                <div class="w-full relative">
+                                    <input id="dashboard-search-input" type="text" placeholder="Type to filter keywords..." oninput="filterDashboardOptions(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault(); performKeywordSearch();}" class="w-full pl-12 pr-4 py-3 text-lg rounded-full bg-nasa-navy border border-nasa-blue focus:ring-2 focus:ring-accent-cyan focus:border-accent-cyan transition" autocomplete="off">
+                                    <div id="dashboard-suggestions" class="absolute z-40 mt-1 w-full max-h-56 overflow-auto rounded-md border border-primary-dark bg-primary-light shadow-lg hidden"></div>
+                                </div>
+                                <select id="dashboard-search-select" onchange="(this.value ? performKeywordSearch() : clearKeywordSearch())" class="hidden">
+                                    <option value="">-- choose keyword --</option>
+                                </select>
+                                <button id="dashboard-search-btn" class="ml-2 py-2 px-4 rounded-full bg-accent-cyan text-nasa-navy font-semibold hover:bg-accent-cyan/80" onclick="performKeywordSearch()">Search</button>
+                                <button id="dashboard-clear-btn" class="ml-2 py-2 px-4 rounded-full bg-primary-light text-gray-300 border border-primary-dark hover:bg-primary-dark" onclick="clearKeywordSearch()">Clear</button>
+                            </div>
+                            <p id="search-results" class="mt-3 text-sm text-gray-500 hidden md:block">Pick a keyword from the suggestions (free text is restricted).</p>
+                            <div id="allowed-keywords-list" class="mt-3 flex flex-wrap gap-2 items-center"></div>
+                        </div>
+                    </div>
+                    <h2 class="text-3xl font-bold text-white border-b border-primary-light pb-2">Key Metrics Snapshot</h2>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                        ${getMetricCard(metricsData.totalStudies, "Total Studies", "book-open")}
+                        ${getMetricCard(metricsData.totalExperiments, "Total Experiments", "flask-conical", "text-orange-400")}
+                        ${getMetricCard(metricsData.keyTopics.length, "Primary Topic Areas", "sigma", "text-green-400")}
+                        ${getMetricCard(Math.max(...Object.values(metricsData.timeline)), "Max Studies per Year (2020)", "calendar-days", "text-purple-400")}
+                    </div>
+                    <h2 class="text-3xl font-bold text-white border-b border-primary-light pb-2">Featured AI Insights</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        ${metricsData.featuredInsights.map(getInsightCard).join('')}
+                    </div>
+                    <h2 class="text-3xl font-bold text-white border-b border-primary-light pb-2">Study Distribution Timeline</h2>
+                    <div class="bg-primary-light p-6 rounded-xl border border-primary-light/50">
+                        <div class="flex justify-between items-end h-64 relative">
+                            ${Object.entries(metricsData.timeline).map(([year, count]) => {
+                                const maxCount = Math.max(...Object.values(metricsData.timeline));
+                                const heightPercent = (count / maxCount) * 100;
+                                return `
+                                    <div class="flex-1 flex flex-col items-center h-full justify-end group cursor-default" style="margin: 0 5px;">
+                                        <div class="w-full bg-accent-cyan rounded-t-lg transition-all duration-500 hover:bg-accent-orange" style="height: ${heightPercent}%;"></div>
+                                        <div class="mt-2 text-xs text-gray-400">${year}</div>
+                                        <span class="absolute top-0 opacity-0 group-hover:opacity-100 transition-opacity text-sm text-accent-cyan -translate-y-8">${count}</span>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                        <p class="text-center text-sm text-gray-500 mt-4">Growth in bioscience publications over time.</p>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- View: Explore Studies ---
+        function renderExploreStudies() {
+            // If a dashboard keyword search is active, filter studies that contain the search term
+            // anywhere in title, summary, abstract, primary keyword, or the keywords array.
+            const baseList = searchKeyword ? studiesData.filter(s => {
+                const q = (searchKeyword || '').toLowerCase();
+                const inTitle = s.title && s.title.toLowerCase().includes(q);
+                const inSummary = s.summary && s.summary.toLowerCase().includes(q);
+                const inAbstract = s.abstract && s.abstract.toLowerCase().includes(q);
+                const inPrimaryKeyword = s.keyword && s.keyword.toLowerCase().includes(q);
+                const inKeywordsArray = Array.isArray(s.keywordsArray) && s.keywordsArray.some(kw => kw.toLowerCase().includes(q));
+                return inTitle || inSummary || inAbstract || inPrimaryKeyword || inKeywordsArray;
+            }) : studiesData;
+            const studiesList = baseList.map(getStudyCard).join('');
+            return `
+                <div class="max-w-7xl mx-auto p-4 md:p-8">
+                    <h1 class="text-4xl font-bold text-white mb-6">Explore Studies</h1>
+                    <div class="lg:grid lg:grid-cols-4 lg:gap-8">
+                        <aside class="lg:col-span-1 bg-primary-light p-6 rounded-xl sticky top-4 mb-6 lg:mb-0 border border-primary-light/50" id="filters-sidebar">
+                            <h2 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">Filter Library</h2>
+                            <div class="mb-5">
+                                <label class="block text-gray-300 mb-2">Year Range (2010 - 2024)</label>
+                                <input type="range" min="2010" max="2024" value="2024" class="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer range-lg focus:outline-none focus:ring-2 focus:ring-accent-cyan" id="filter-year" oninput="document.getElementById('year-label').innerText = this.value">
+                                <div class="flex justify-between text-sm text-gray-400 mt-1"><span>2010</span><span id="year-label">2024</span></div>
+                            </div>
+                            <div class="mb-5">
+                                <label class="block text-gray-300 mb-2">Experiment Type</label>
+                                <select id="filter-type" class="w-full p-2 rounded bg-nasa-navy border border-primary-dark text-gray-300 focus:ring-accent-cyan focus:border-accent-cyan">
+                                    <option value="">All Types</option><option value="animal">Animal</option><option value="plant">Plant</option><option value="human">Human</option><option value="microbial">Microbial</option>
+                                </select>
+                            </div>
+                            <div class="mb-5">
+                                <label class="block text-gray-300 mb-2">Outcome Type</label>
+                                <select id="filter-outcome" class="w-full p-2 rounded bg-nasa-navy border border-primary-dark text-gray-300 focus:ring-accent-cyan focus:border-accent-cyan">
+                                    <option value="">All Outcomes</option><option value="positive">Positive</option><option value="inconclusive">Inconclusive</option><option value="contradictory">Contradictory</option>
+                                </select>
+                            </div>
+                            <div class="mb-5">
+                                <label class="block text-gray-300 mb-2">Mission Type</label>
+                                <select id="filter-mission" class="w-full p-2 rounded bg-nasa-navy border border-primary-dark text-gray-300 focus:ring-accent-cyan focus:border-accent-cyan">
+                                    <option value="">All Missions</option><option value="ISS">ISS</option><option value="Shuttle">Shuttle</option><option value="Mars Analog">Mars Analog</option><option value="Ground Sim">Ground Sim</option>
+                                </select>
+                            </div>
+                            <button class="w-full mt-4 py-2 rounded-lg bg-accent-cyan text-nasa-navy font-bold transition duration-200 hover:bg-accent-cyan/80 shadow-lg hover:shadow-glow-cyan" onclick="filterStudies()">Apply Filters</button>
+                        </aside>
+                        <main class="lg:col-span-3">
+                            <div class="flex justify-between items-center mb-4">
+                                <h2 class="text-xl text-gray-300" id="results-count">Showing ${baseList.length} of ${metricsData.totalStudies} Studies</h2>
+                                <button class="text-sm text-accent-cyan hover:text-accent-orange transition flex items-center space-x-1" onclick="console.log('Exported!');"><i data-lucide="download" class="w-4 h-4"></i><span>Export Summaries</span></button>
+                            </div>
+                            <div id="studies-list" class="space-y-4">${studiesList}</div>
+                        </main>
+                    </div>
+                </div>
+            `;
+        }
+        
+        function attachFilterListeners() {
+            document.getElementById('filter-year').addEventListener('input', filterStudies);
+            document.getElementById('filter-type').addEventListener('change', filterStudies);
+            document.getElementById('filter-outcome').addEventListener('change', filterStudies);
+            document.getElementById('filter-mission').addEventListener('change', filterStudies);
+            document.getElementById('year-label').innerText = document.getElementById('filter-year').value;
+        }
+
+        // Dashboard search helpers
+        function setupDashboardSearch() {
+            const sel = document.getElementById('dashboard-search-select');
+            const chips = document.getElementById('allowed-keywords-list');
+            const input = document.getElementById('dashboard-search-input');
+            if (sel) {
+                sel.innerHTML = '<option value="">-- choose keyword --</option>' + allowedKeywords.map(k => `<option value="${escapeHtml(k)}">${escapeHtml(k)}</option>`).join('');
+            }
+            if (input) {
+                input.value = searchKeyword || '';
+                filterDashboardOptions(input.value);
+            }
+            if (chips) {
+                chips.innerHTML = allowedKeywords.slice(0, 50).map(k => `<button type="button" class="text-xs px-2 py-1 rounded-full bg-nasa-navy border border-primary-dark text-gray-200 hover:bg-primary-light" onclick="(function(){ document.getElementById('dashboard-search-select').value='${escapeHtml(k)}'; performKeywordSearch(); })()">${escapeHtml(k)}</button>`).join('');
+            }
+        }
+
+        function performKeywordSearch() {
+            const input = document.getElementById('dashboard-search-input');
+            const sel = document.getElementById('dashboard-search-select');
+            if (!input || !sel) return;
+            const val = (input.value || sel.value || '').trim();
+            if (!val) {
+                alert('Please select or type a keyword from the suggestions.');
+                return;
+            }
+            const q = val.toLowerCase();
+            // 1) exact match
+            let found = allowedKeywords.find(k => k.toLowerCase() === q);
+            // 2) if not exact, look for unambiguous substring match among allowedKeywords
+            if (!found) {
+                const matches = allowedKeywords.filter(k => k.toLowerCase().includes(q));
+                if (matches.length === 0) {
+                    // no allowed keyword matches
+                    filterDashboardOptions(val);
+                    alert('Keyword not recognized. Please pick one from the suggestions.');
+                    return;
+                } else if (matches.length === 1) {
+                    found = matches[0];
+                } else {
+                    // ambiguous; show suggestions and ask user to pick
+                    filterDashboardOptions(val);
+                    const box = document.getElementById('dashboard-suggestions');
+                    if (box) box.classList.remove('hidden');
+                    alert('Multiple matching keywords found. Please choose one from the suggestions.');
+                    return;
+                }
+            }
+
+            // Use the resolved allowed keyword
+            searchKeyword = found;
+            sel.value = found;
+            input.value = found;
+            hideDashboardSuggestions();
+            // Navigate to explore and the Explore renderer will pick up searchKeyword
+            navigate('explore', null);
+            // Show a concise confirmation on the dashboard search line
+            const sr = document.getElementById('search-results');
+            if (sr) { sr.innerText = `Search: ${searchKeyword}`; sr.classList.remove('hidden'); }
+        }
+
+        function clearKeywordSearch() {
+            searchKeyword = '';
+            const sel = document.getElementById('dashboard-search-select');
+            const input = document.getElementById('dashboard-search-input');
+            if (sel) sel.value = '';
+            if (input) input.value = '';
+            const sr = document.getElementById('search-results');
+            if (sr) { sr.innerText = ''; sr.classList.add('hidden'); }
+            // Navigate to explore and show all studies
+            navigate('explore', null);
+        }
+
+        // Live typeahead suggestions for dashboard search
+        function filterDashboardOptions(query) {
+            const box = document.getElementById('dashboard-suggestions');
+            const sel = document.getElementById('dashboard-search-select');
+            if (!box || !sel) return;
+            const q = (query || '').toLowerCase();
+            const results = (q ? allowedKeywords.filter(k => k.toLowerCase().includes(q)) : allowedKeywords).slice(0, 100);
+            if (results.length === 0) {
+                box.classList.add('hidden');
+                box.innerHTML = '';
+                return;
+            }
+            box.innerHTML = results.map(k => `<button type="button" class=\"w-full text-left px-3 py-2 hover:bg-primary-dark text-sm\" onclick=\"(function(){ document.getElementById('dashboard-search-input').value='${escapeHtml(k)}'; document.getElementById('dashboard-search-select').value='${escapeHtml(k)}'; hideDashboardSuggestions(); })()\">${escapeHtml(k)}</button>`).join('');
+            box.classList.remove('hidden');
+        }
+
+        function hideDashboardSuggestions() {
+            const box = document.getElementById('dashboard-suggestions');
+            if (box) box.classList.add('hidden');
+        }
+
+        // small helper to escape HTML when injecting into innerHTML
+        function escapeHtml(str) {
+            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        // Create a filesystem-friendly slug from a title (used to derive image filenames)
+        function slugify(str) {
+            return String(str || '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '_')
+                .replace(/^_+|_+$/g, '')
+                .replace(/_+/g, '_');
+        }
+
+        // Create a filename-friendly version of the title but preserve case
+        function filenameify(str) {
+            return String(str || '')
+                .replace(/[^A-Za-z0-9]+/g, '_')
+                .replace(/^_+|_+$/g, '')
+                .replace(/_+/g, '_');
+        }
+
+        // Try to extract a publication URL from a raw record. Common keys: URL, url, link, doi (not all records have direct links).
+        function extractPublicationUrl(r) {
+            if (!r) return null;
+            const candidates = [r.URL, r.url, r.link, r.Link, r.paper_url, r.publication_url];
+            for (const c of candidates) {
+                if (c && typeof c === 'string' && c.trim()) return c.trim();
+            }
+            // If there's a DOI in the summary/abstract, attempt to form a doi.org link
+            const text = String(r.Summary || r.summary || r.Abstract || r.abstract || '');
+            const doiMatch = text.match(/doi:\s*(10\.\d{4,9}\/[^\s,;]+)/i);
+            if (doiMatch) return `https://doi.org/${doiMatch[1]}`;
+            return null;
+        }
+
+        // Try to resolve an existing image URL for each study by testing a few likely patterns
+        // in the local `images/` folder. Picks the first candidate that responds OK.
+        async function resolveStudyImages(studies) {
+            const base = 'images/';
+            const attempts = studies.map(async (s) => {
+                // If the study already has an image string, check if it exists
+                if (s.image && typeof s.image === 'string') {
+                    try {
+                        if (await urlExists(s.image)) {
+                            console.debug(`keep existing image for study ${s.id}: ${s.image}`);
+                            return; // keep existing
+                        }
+                    } catch (e) { /* continue to candidate probing */ }
+                }
+
+                const id = s.id;
+                const idx = id - 1;
+                const candidates = [
+                    normalizeImagePath({ image_path: s.image }, id, s.title),
+                    `${base}graph_${id}_${filenameify(s.title)}.png`,
+                    `${base}graph_${id}_${slugify(s.title)}.png`,
+                    `${base}graph_${idx}_${filenameify(s.title)}.png`,
+                    `${base}graph_${idx}_${slugify(s.title)}.png`,
+                    // also try a bare graph_<id>.png in case titles were omitted
+                    `${base}graph_${id}.png`,
+                    `${base}graph_${idx}.png`
+                ];
+                for (const cand of candidates) {
+                    try {
+                        if (await urlExists(cand)) { s.image = cand; console.debug(`resolved image for study ${s.id}: ${cand}`); return; }
+                    } catch (e) {
+                        // ignore and try next
+                    }
+                }
+                // If none matched, keep the default `s.image` (img onerror will handle fallback)
+            });
+            await Promise.all(attempts);
+        }
+
+        // Normalize an image path: prefer r.image_path if present and ensure it points into images/
+        function normalizeImagePath(r, defaultId, title) {
+            if (r && r.image_path) {
+                // If image_path is absolute-like, keep as-is; otherwise, force into images/
+                const p = String(r.image_path || '').trim();
+                if (!p) return `images/graph_${defaultId}_${slugify(title)}.png`;
+                // if path already contains 'images/' or starts with '/', use it directly
+                if (p.startsWith('images/') || p.startsWith('/')) return p.replace(/^\//, '');
+                // otherwise, assume it's relative to images/
+                return `images/${p}`;
+            }
+            return `images/graph_${defaultId}_${slugify(title)}.png`;
+        }
+
+        // Check if a URL exists. Try HEAD first, then GET as a fallback for servers that don't support HEAD.
+        async function urlExists(url) {
+            try {
+                let res = await fetch(url, { method: 'HEAD' });
+                if (res && res.ok) return true;
+            } catch (e) {
+                // try GET as fallback
+                try {
+                    const res2 = await fetch(url, { method: 'GET' });
+                    if (res2 && res2.ok) return true;
+                } catch (e2) {
+                    // no-op
+                }
+            }
+            return false;
+        }
+
+        // Ensure a single study has a resolved image URL (used when opening details)
+        async function ensureStudyImage(id) {
+            const s = studiesData.find(x => x.id === id);
+            if (!s) return;
+            // If already resolved and looks valid, skip
+            if (s.image && typeof s.image === 'string') {
+                const exists = await urlExists(s.image);
+                if (exists) return;
+            }
+            // Try explicit image_path from original record if available
+            // Attempt the likely candidates used in resolveStudyImages
+            const base = 'images/';
+            const idx = s.id - 1;
+            const candidates = [
+                normalizeImagePath({ image_path: s.image }, s.id, s.title),
+                `${base}graph_${s.id}_${filenameify(s.title)}.png`,
+                `${base}graph_${s.id}_${slugify(s.title)}.png`,
+                `${base}graph_${idx}_${filenameify(s.title)}.png`,
+                `${base}graph_${idx}_${slugify(s.title)}.png`,
+                `${base}graph_${s.id}.png`,
+                `${base}graph_${idx}.png`
+            ];
+            for (const cand of candidates) {
+                try {
+                    if (await urlExists(cand)) { s.image = cand; console.debug(`ensureStudyImage resolved for ${s.id}: ${cand}`); return; }
+                } catch (e) { /* ignore */ }
+            }
+            console.debug(`ensureStudyImage: no image found for study ${s.id}, leaving s.image='${s.image}'`);
+        }
+
+        function filterStudies() {
+            const year = parseInt(document.getElementById('filter-year').value);
+            const type = document.getElementById('filter-type').value;
+            const outcome = document.getElementById('filter-outcome').value;
+            const mission = document.getElementById('filter-mission').value;
+
+            const filtered = studiesData.filter(study => {
+                let matches = true;
+                if (study.year > year) matches = false;
+                if (type && study.type !== type) matches = false;
+                if (outcome && study.outcome !== outcome) matches = false;
+                if (mission && study.mission !== mission) matches = false;
+                return matches;
+            });
+
+            const listContainer = document.getElementById('studies-list');
+            const resultsCount = document.getElementById('results-count');
+
+            if (listContainer && resultsCount) {
+                listContainer.innerHTML = filtered.map(getStudyCard).join('') || `<div class="p-6 text-center bg-primary-light/70 rounded-xl">No studies found matching the current criteria.</div>`;
+                resultsCount.innerText = `Showing ${filtered.length} of ${metricsData.totalStudies} Studies`;
+                lucide.createIcons();
+            }
+        }
+
+        // --- View: Study Details ---
+        function renderStudyDetails(id) {
+            const study = studiesData.find(s => s.id === id);
+            if (!study) {
+                return `<div class="p-8 text-center text-red-400">Study not found. ID: ${id}</div>`;
+            }
+            
+            return `
+                <div class="max-w-4xl mx-auto p-4 md:p-8">
+                    <button class="text-accent-cyan hover:text-accent-orange mb-4 flex items-center space-x-2" onclick="navigate('explore')"><i data-lucide="chevron-left" class="w-5 h-5"></i><span>Back to Explore Studies</span></button>
+                    <div class="bg-primary-light p-8 rounded-2xl shadow-xl border border-primary-light/50">
+                        <h1 class="text-3xl md:text-4xl font-extrabold text-white">${study.title}</h1>
+                        <p class="mt-2 text-md text-gray-400">Citation: NASA Bioscience Journal, ${study.year}, Vol 15. DOI: ${study.id}-NASA-${study.year}</p>
+                        <div class="mt-6 border-t border-primary-dark pt-6">
+                            <h2 class="text-2xl font-semibold text-accent-cyan mb-3">AI Summary</h2>
+                            <p class="text-gray-200 leading-relaxed italic">${study.abstract} <span class="font-normal text-gray-300">This AI-generated summary highlights the primary findings regarding ${study.keyword} and its implications for ${study.type} biology in space.</span></p>
+                            ${study.pubUrl ? `
+                            <a href="${escapeHtml(study.pubUrl)}" rel="noopener noreferrer" target="_blank" class="mt-4 inline-flex items-center text-accent-orange hover:underline text-sm">View Full Publication <i data-lucide="external-link" class="w-4 h-4 ml-1"></i></a>
+                            ` : `
+                            <div class="mt-4 text-sm text-gray-400">Full publication link not available for this study.</div>
+                            `}
+                        </div>
+                        
+                            <div class="mt-8 border-t border-primary-dark pt-6">
+                            <h2 class="text-2xl font-semibold text-white mb-3">Knowledge Graph Mini-View (Simulated)</h2>
+                            <div class="bg-nasa-navy border border-gray-700 rounded-lg overflow-visible relative flex items-center justify-center p-4">
+                                <img src="${study.image}" alt="Graph thumbnail" class="max-w-full max-h-[60vh] w-auto h-auto object-contain bg-nasa-navy" onerror="(function(img){ img.style.display='none'; var ph = img.nextElementSibling; if(ph){ ph.removeAttribute('hidden'); ph.style.display='flex'; } })(this)" />
+                                <div class="flex items-center justify-center text-gray-500 p-4 w-full" style="display:none;align-items:center;justify-content:center;" hidden>
+                                    <i data-lucide="git-branch" class="w-6 h-6 mr-2 text-accent-cyan"></i>
+                                    <div class="text-center">
+                                        <div class="font-medium">Visualization unavailable</div>
+                                        <div class="text-sm mt-1">This study links <span class="text-accent-cyan">${study.keyword}</span> to <span class="text-accent-cyan">${study.type}</span> experiments.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-8"><h2 class="text-2xl font-semibold text-white mb-3">Related Studies</h2><div class="space-y-3">
+                                <div class="p-3 bg-nasa-navy rounded-lg hover:bg-primary-dark cursor-pointer border border-primary-dark/50" onclick="navigate('details', 105)"><p class="text-gray-200">Study 105: DNA repair kinetics under low-dose, high-LET radiation</p><span class="text-xs text-green-400">High Relevance: Radiation | Genomics</span></div>
+                                <div class="p-3 bg-nasa-navy rounded-lg hover:bg-primary-dark cursor-pointer border border-primary-dark/50" onclick="navigate('details', 101)"><p class="text-gray-200">Study 101: Long-term effects of cosmic radiation on murine neurogenesis</p><span class="text-xs text-accent-cyan">Medium Relevance: Same Mission Type</span></div>
+                        </div></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // --- Other Views (KnowledgeGraph, Insights, MissionPlanner) - using metricsData ---
+        function renderKnowledgeGraph() {
+            return `
+                <div class="max-w-7xl mx-auto p-4 md:p-8">
+                    <h1 class="text-4xl font-bold text-white mb-6">🌐 Knowledge Graph Explorer</h1>
+                    <p class="text-gray-400 mb-4">Interactive knowledge graph showing relationships between topics and studies. Drag nodes, zoom, and click a study node to open its details.</p>
+                    <div id="kg-controls" class="flex items-center space-x-3 mb-4 flex-wrap">
+                        <label class="text-sm text-gray-300">Year range:</label>
+                        <select id="kg-year-min" class="p-2 rounded bg-nasa-navy text-gray-200 border border-primary-dark"></select>
+                        <select id="kg-year-max" class="p-2 rounded bg-nasa-navy text-gray-200 border border-primary-dark"></select>
+                        <label class="text-sm text-gray-300">Topics:</label>
+                        <select id="kg-topic-select" multiple class="p-2 rounded bg-nasa-navy text-gray-200 border border-primary-dark max-h-40 overflow-auto" style="min-width:220px"></select>
+                        <label class="text-sm text-gray-300">Outcome:</label>
+                        <select id="kg-outcome-select" class="p-2 rounded bg-nasa-navy text-gray-200 border border-primary-dark">
+                            <option value="">All</option>
+                            <option value="positive">Positive</option>
+                            <option value="inconclusive">Inconclusive</option>
+                            <option value="contradictory">Contradictory</option>
+                        </select>
+                        <label class="text-sm text-gray-300">Mode:</label>
+                        <select id="kg-mode-select" class="p-2 rounded bg-nasa-navy text-gray-200 border border-primary-dark">
+                            <option value="auto">Auto</option>
+                            <option value="all">All</option>
+                            <option value="paginate">Paginate</option>
+                            <option value="cluster">Cluster</option>
+                        </select>
+                        <label class="text-sm text-gray-300">Page size:</label>
+                        <input id="kg-page-size" type="number" min="10" value="200" class="w-20 p-2 rounded bg-nasa-navy text-gray-200 border border-primary-dark" />
+                        <button id="kg-run-btn" onclick="(function(){ window.kgPageIndex=0; buildKnowledgeGraph(); })()" class="ml-3 py-1.5 px-3 rounded bg-accent-cyan text-nasa-navy">Apply</button>
+                        <div class="ml-auto flex items-center space-x-2">
+                            <button id="kg-prev" onclick="(function(){ if(window.kgPageIndex>0){ window.kgPageIndex--; buildKnowledgeGraph(); } })()" class="py-1 px-2 rounded bg-primary-light border border-primary-dark text-sm">Prev</button>
+                            <span id="kg-page-info" class="text-sm text-gray-300">Page 1</span>
+                            <button id="kg-next" onclick="(function(){ window.kgPageIndex=(window.kgPageIndex||0)+1; buildKnowledgeGraph(); })()" class="py-1 px-2 rounded bg-primary-light border border-primary-dark text-sm">Next</button>
+                            <button id="kg-export-svg" onclick="downloadGraphSVG()" class="py-1 px-2 rounded bg-primary-light border border-primary-dark text-sm">Export SVG</button>
+                            <button id="kg-export-png" onclick="downloadGraphPNG()" class="py-1 px-2 rounded bg-primary-light border border-primary-dark text-sm">Export PNG</button>
+                        </div>
+                    </div>
+                    <div id="kg-legend" class="flex items-center gap-4 text-sm text-gray-300 mb-3">
+                        <div class="flex items-center gap-2 cursor-pointer" data-outcome="positive" onclick="toggleKgOutcome('positive', this)"><span id="legend-positive" class="w-3 h-3 bg-green-400 rounded-full"></span> Positive</div>
+                        <div class="flex items-center gap-2 cursor-pointer" data-outcome="contradictory" onclick="toggleKgOutcome('contradictory', this)"><span id="legend-contradictory" class="w-3 h-3 bg-accent-orange rounded-full"></span> Contradictory</div>
+                        <div class="flex items-center gap-2 cursor-pointer" data-outcome="inconclusive" onclick="toggleKgOutcome('inconclusive', this)"><span id="legend-inconclusive" class="w-3 h-3 bg-gray-500 rounded-full"></span> Inconclusive</div>
+                    </div>
+                    <div id="kg-container" class="bg-primary-light p-4 rounded-2xl shadow-xl border border-primary-light/50">
+                        <div id="kg-canvas" class="w-full h-[70vh]"></div>
+                        <div class="mt-4 text-sm text-gray-400">Tip: Use mouse wheel / two-finger scroll to zoom, drag nodes to explore. Click legend items to toggle outcomes.</div>
+                    </div>
+                </div>`;
+        }
+
+        // Build a force-directed graph inside #kg-canvas from studiesData and metricsData
+        function buildKnowledgeGraph() {
+            try {
+                const container = document.getElementById('kg-canvas');
+                if (!container) return;
+                // clear previous content
+                container.innerHTML = '';
+
+                const width = container.clientWidth || 1000;
+                const height = container.clientHeight || 600;
+
+                // Gather filter values (wire to the correct controls)
+                const yearMinEl = document.getElementById('kg-year-min');
+                const yearMaxEl = document.getElementById('kg-year-max');
+                const topicSelect = document.getElementById('kg-topic-select');
+                const outcomeSel = document.getElementById('kg-outcome-select');
+                const modeSel = document.getElementById('kg-mode-select');
+                const pageSizeEl = document.getElementById('kg-page-size');
+
+                const yearMin = yearMinEl ? parseInt(yearMinEl.value) || null : null;
+                const yearMax = yearMaxEl ? parseInt(yearMaxEl.value) || null : null;
+                const selectedTopics = topicSelect ? Array.from(topicSelect.selectedOptions).map(o => o.value) : [];
+                const outcomeFilter = outcomeSel ? outcomeSel.value : '';
+                const mode = modeSel ? modeSel.value : 'auto';
+                const pageSize = pageSizeEl ? Math.max(10, parseInt(pageSizeEl.value) || 200) : 200;
+
+                // Build topic list from all keywords present in studiesData if metricsData.keyTopics isn't exhaustive
+                const topicSet = new Set((metricsData && Array.isArray(metricsData.keyTopics) ? metricsData.keyTopics : []));
+                (studiesData || []).forEach(s => {
+                    const arr = Array.isArray(s.keywordsArray) ? s.keywordsArray : (s.keyword ? [s.keyword] : []);
+                    arr.forEach(k => { if (k && k.trim()) topicSet.add(k.trim()); });
+                });
+                const topics = Array.from(topicSet);
+
+                // prepare topic nodes
+                const topicNodes = topics.map((t, i) => ({ id: `topic-${i}`, type: 'topic', label: t, topicIndex: i }));
+
+                // Filter studies by year/outcome/topic selections
+                let filteredStudies = (studiesData || []).slice();
+                if (yearMin !== null) filteredStudies = filteredStudies.filter(s => Number.isFinite(s.year) ? s.year >= yearMin : true);
+                if (yearMax !== null) filteredStudies = filteredStudies.filter(s => Number.isFinite(s.year) ? s.year <= yearMax : true);
+                if (outcomeFilter) filteredStudies = filteredStudies.filter(s => s.outcome === outcomeFilter);
+                if (selectedTopics && selectedTopics.length > 0) {
+                    filteredStudies = filteredStudies.filter(s => {
+                        const kws = Array.isArray(s.keywordsArray) ? s.keywordsArray : (s.keyword ? [s.keyword] : []);
+                        const normalized = kws.map(k => (k||'').toLowerCase());
+                        return selectedTopics.some(t => normalized.includes((t||'').toLowerCase()));
+                    });
+                }
+
+                // initialize outcome toggles global state if missing
+                if (!window.kgOutcomeToggles) {
+                    window.kgOutcomeToggles = { positive: true, contradictory: true, inconclusive: true };
+                }
+
+                // Build study nodes
+                const studyNodesAll = filteredStudies.map(s => ({ id: `study-${s.id}`, type: 'study', label: s.title, studyId: s.id, year: s.year, outcome: s.outcome, raw: s }));
+
+                // Determine effective mode: if auto, pick paginate when studies > pageSize
+                let effectiveMode = mode;
+                if (mode === 'auto') effectiveMode = (studyNodesAll.length > pageSize) ? 'paginate' : 'all';
+
+                // Pagination state
+                window.kgPageIndex = window.kgPageIndex || 0;
+                const totalPages = Math.max(1, Math.ceil(studyNodesAll.length / pageSize));
+                if (window.kgPageIndex >= totalPages) window.kgPageIndex = totalPages - 1;
+
+                // Depending on mode, choose study nodes to render
+                let studyNodes = [];
+                if (effectiveMode === 'paginate') {
+                    const start = window.kgPageIndex * pageSize;
+                    studyNodes = studyNodesAll.slice(start, start + pageSize);
+                } else if (effectiveMode === 'cluster') {
+                    // cluster mode: we will not render individual study nodes; instead, topic nodes will be sized by counts
+                    studyNodes = [];
+                } else {
+                    studyNodes = studyNodesAll;
+                }
+
+                // Links: connect study to every topic found in its keywordsArray
+                const links = [];
+                const normalize = str => String(str || '').toLowerCase().trim();
+
+                studyNodes.forEach(sn => {
+                    const s = sn.raw;
+                    const kws = Array.isArray(s.keywordsArray) ? s.keywordsArray : (s.keyword ? [s.keyword] : []);
+                    kws.forEach(kw => {
+                        const trimmed = (kw || '').trim();
+                        if (!trimmed) return;
+                        const tIndex = topics.findIndex(t => normalize(t) === normalize(trimmed));
+                        if (tIndex !== -1) links.push({ source: `study-${sn.studyId}`, target: `topic-${tIndex}` });
+                    });
+                });
+
+                // For cluster mode compute counts per topic
+                const topicCounts = {};
+                if (effectiveMode === 'cluster') {
+                    studyNodesAll.forEach(s => {
+                        const kws = Array.isArray(s.keywordsArray) ? s.keywordsArray : (s.keyword ? [s.keyword] : []);
+                        kws.forEach(kw => {
+                            const trimmed = (kw || '').trim();
+                            if (!trimmed) return;
+                            const tIndex = topics.findIndex(t => normalize(t) === normalize(trimmed));
+                            if (tIndex !== -1) topicCounts[`topic-${tIndex}`] = (topicCounts[`topic-${tIndex}`] || 0) + 1;
+                        });
+                    });
+                }
+
+                // When cluster mode, we only render topics (sized), otherwise topics + studies
+                const nodes = (effectiveMode === 'cluster') ? topicNodes.map(tn => Object.assign({}, tn, { size: topicCounts[tn.id] || 0 })) : topicNodes.concat(studyNodes);
+
+                // populate year min/max selects dynamically
+                const years = Array.from(new Set((studiesData || []).map(s => s.year).filter(Boolean))).sort((a,b)=>a-b);
+                if (yearMinEl && yearMaxEl) {
+                    yearMinEl.innerHTML = `<option value="">Min</option>` + years.map(y => `<option value="${y}">${y}</option>`).join('');
+                    yearMaxEl.innerHTML = `<option value="">Max</option>` + years.map(y => `<option value="${y}">${y}</option>`).join('');
+                    // restore current selection if any
+                    if (yearMin !== null) yearMinEl.value = String(yearMin);
+                    if (yearMax !== null) yearMaxEl.value = String(yearMax);
+                }
+
+                // populate topic select
+                if (topicSelect) {
+                    topicSelect.innerHTML = topics.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+                    // preserve previously selected values
+                    if (selectedTopics && selectedTopics.length) {
+                        Array.from(topicSelect.options).forEach(o => { if (selectedTopics.includes(o.value)) o.selected = true; });
+                    }
+                }
+
+                // Create SVG
+                const svg = d3.select(container).append('svg')
+                    .attr('width', '100%')
+                    .attr('height', '100%')
+                    .attr('viewBox', `0 0 ${width} ${height}`)
+                    .attr('preserveAspectRatio', 'xMidYMid meet')
+                    .style('cursor', 'move');
+
+                const g = svg.append('g');
+
+                const link = g.append('g').attr('stroke', '#9fb6c8').attr('stroke-opacity', 0.8).selectAll('line')
+                    .data(links).enter().append('line').attr('stroke-width', 1);
+
+                const node = g.append('g').selectAll('g').data(nodes).enter().append('g').attr('class', d => 'kg-node ' + d.type).call(d3.drag()
+                    .on('start', dragstarted)
+                    .on('drag', dragged)
+                    .on('end', dragended)
+                );
+
+                node.append('circle')
+                    .attr('r', d => {
+                        if (d.type === 'topic') return (effectiveMode === 'cluster' ? Math.max(12, Math.min(60, (d.size || 0) * 2 + 12)) : 18);
+                        return 8;
+                    })
+                    .attr('fill', d => {
+                        if (d.type === 'topic') return '#ff9900';
+                        if (!window.kgOutcomeToggles[d.outcome]) return '#2b2b2b';
+                        if (d.outcome === 'positive') return '#22c55e';
+                        if (d.outcome === 'contradictory') return '#ff9900';
+                        return '#9ca3af';
+                    })
+                    .attr('stroke', '#0e1a3a').attr('stroke-width', 1.2)
+                    .style('opacity', d => (d.type === 'study' && !window.kgOutcomeToggles[d.outcome]) ? 0.15 : 1);
+
+                node.append('text')
+                    .text(d => d.type === 'topic' ? d.label : (d.label.length>40 ? d.label.slice(0,40)+'...' : d.label))
+                    .attr('x', 14).attr('y', 4).attr('fill', '#ffffff').attr('font-size', d => d.type === 'topic' ? 12 : 10)
+                    .style('pointer-events','none');
+
+                const tooltip = d3.select(container).append('div').style('position','absolute').style('pointer-events','none').style('padding','6px 8px').style('background','rgba(10,20,40,0.9)').style('color','#fff').style('border-radius','6px').style('font-size','12px').style('display','none');
+
+                node.on('mouseover', function(event, d){
+                    if (d.type === 'topic') tooltip.style('display','block').html(`<strong>${escapeHtml(d.label)}</strong><br/>Related studies: ${effectiveMode === 'cluster' ? (d.size || 0) : d.type === 'topic' ? 'multiple' : ''}`);
+                    else tooltip.style('display','block').html(`<strong>${escapeHtml(d.label)}</strong><br/>Year: ${d.year || 'n/a'}<br/>Outcome: ${d.outcome || 'n/a'}`);
+                }).on('mousemove', function(event){
+                    tooltip.style('left',(event.offsetX+12)+'px').style('top',(event.offsetY+12)+'px');
+                }).on('mouseout', function(){ tooltip.style('display','none'); })
+                .on('click', function(event, d){ if (d.type === 'study') navigate('details', d.studyId); else if (effectiveMode === 'cluster' && d.type === 'topic') {
+                    // In cluster mode clicking a topic drills down to paginate on that topic
+                    // select that topic and force paginate
+                    if (topicSelect) { Array.from(topicSelect.options).forEach(o => o.selected = (o.value === d.label)); }
+                    document.getElementById('kg-mode-select').value = 'paginate';
+                    window.kgPageIndex = 0;
+                    buildKnowledgeGraph();
+                }});
+
+                const simulation = d3.forceSimulation(nodes)
+                    .force('link', d3.forceLink(links).id(d => d.id).distance(80).strength(0.7))
+                    .force('charge', d3.forceManyBody().strength(d => d.type === 'topic' ? -400 : -40))
+                    .force('center', d3.forceCenter(width/2, height/2))
+                    .force('collision', d3.forceCollide().radius(d => d.type === 'topic' ? 28 : 14));
+
+                simulation.on('tick', () => {
+                    link.attr('x1', d => getNodeById(nodes, d.source).x)
+                        .attr('y1', d => getNodeById(nodes, d.source).y)
+                        .attr('x2', d => getNodeById(nodes, d.target).x)
+                        .attr('y2', d => getNodeById(nodes, d.target).y);
+                    node.attr('transform', d => `translate(${d.x},${d.y})`);
+                });
+
+                svg.call(d3.zoom().scaleExtent([0.3, 3]).on('zoom', (event) => { g.attr('transform', event.transform); }));
+
+                function dragstarted(event, d) { if (!event.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; }
+                function dragged(event, d) { d.fx = event.x; d.fy = event.y; }
+                function dragended(event, d) { if (!event.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }
+
+                function getNodeById(nodesArr, idOrObj) { const id = typeof idOrObj === 'string' ? idOrObj : idOrObj.id; return nodesArr.find(n => n.id === id) || idOrObj; }
+
+                // Export helpers (unchanged)
+                window.downloadGraphSVG = function() {
+                    try {
+                        const svgEl = container.querySelector('svg');
+                        const serializer = new XMLSerializer();
+                        const src = serializer.serializeToString(svgEl);
+                        const blob = new Blob([src], {type: 'image/svg+xml;charset=utf-8'});
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a'); a.href = url; a.download = 'knowledge_graph.svg'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+                    } catch (e) { console.error('Export SVG failed', e); }
+                };
+
+                window.downloadGraphPNG = function() {
+                    try {
+                        const svgEl = container.querySelector('svg');
+                        const serializer = new XMLSerializer();
+                        const src = serializer.serializeToString(svgEl);
+                        const img = new Image();
+                        const svgBlob = new Blob([src], {type: 'image/svg+xml;charset=utf-8'});
+                        const url = URL.createObjectURL(svgBlob);
+                        img.onload = function() {
+                            const canvas = document.createElement('canvas'); canvas.width = svgEl.viewBox.baseVal.width || svgEl.clientWidth; canvas.height = svgEl.viewBox.baseVal.height || svgEl.clientHeight;
+                            const ctx = canvas.getContext('2d'); ctx.fillStyle = '#0e1a3a'; ctx.fillRect(0,0,canvas.width,canvas.height);
+                            ctx.drawImage(img,0,0);
+                            URL.revokeObjectURL(url);
+                            const pngUrl = canvas.toDataURL('image/png');
+                            const a = document.createElement('a'); a.href = pngUrl; a.download = 'knowledge_graph.png'; document.body.appendChild(a); a.click(); a.remove();
+                        };
+                        img.src = url;
+                    } catch (e) { console.error('Export PNG failed', e); }
+                };
+
+                // Update pagination UI text
+                const pageInfo = document.getElementById('kg-page-info');
+                if (pageInfo) pageInfo.innerText = `Page ${Math.min(window.kgPageIndex+1, totalPages)} of ${totalPages}`;
+
+                // enable/disable prev/next
+                const prevBtn = document.getElementById('kg-prev');
+                const nextBtn = document.getElementById('kg-next');
+                if (prevBtn) prevBtn.disabled = (window.kgPageIndex <= 0);
+                if (nextBtn) nextBtn.disabled = (window.kgPageIndex >= totalPages - 1);
+
+            } catch (e) {
+                console.error('Failed to build knowledge graph:', e);
+            }
+        }
+
+        // Toggle outcome visibility from legend
+        function toggleKgOutcome(outcome, el) {
+            window.kgOutcomeToggles = window.kgOutcomeToggles || { positive: true, contradictory: true, inconclusive: true };
+            window.kgOutcomeToggles[outcome] = !window.kgOutcomeToggles[outcome];
+            // visually toggle the legend dot
+            if (el && el.querySelector) {
+                const dot = el.querySelector('span');
+                if (dot) {
+                    dot.style.opacity = window.kgOutcomeToggles[outcome] ? '1' : '0.25';
+                }
+            }
+            // rebuild graph to reflect outcome toggles
+            buildKnowledgeGraph();
+        }
+        function renderDashboardInsights() { /* ... function remains the same, but uses metricsData ... */ 
+            const knowledgeGaps = [
+                "Need for long-term, multi-generational studies on reproductive biology in microgravity.",
+                "Lack of consensus on optimal radiation shielding materials for cislunar habitats.",
+                "Insufficient data on human performance in *partial* gravity environments (e.g., Mars)."
+            ];
+             return `
+                <div class="max-w-7xl mx-auto p-4 md:p-8 space-y-10">
+                    <h1 class="text-4xl font-bold text-white mb-6">📊 Dashboard Insights (AI Summaries)</h1>
+                    <p class="text-gray-400">AI-driven aggregations identifying major trends, areas of consensus, and critical knowledge gaps.</p>
+                    <div class="bg-primary-light p-6 rounded-xl border border-primary-light/50">
+                        <h2 class="text-2xl font-semibold mb-4 text-white">Consensus vs. Contradiction Heatmap</h2>
+                        <div class="space-y-3">
+                            ${metricsData.consensusHeatmap.map(data => `
+                                <div class="flex flex-col"><p class="text-gray-300 mb-1">${data.topic}</p><div class="flex h-5 rounded overflow-hidden text-sm"><div class="bg-green-600 text-center text-white" style="width: ${data.consensus}%" title="Consensus: ${data.consensus}%"><span class="hidden sm:inline">${data.consensus}% Consensus</span></div><div class="bg-red-600 text-center text-white" style="width: ${data.contradiction}%" title="Contradiction: ${data.contradiction}%"><span class="hidden sm:inline">${data.contradiction}% Contradiction</span></div></div></div>
+                            `).join('')}
+                        </div>
+                    </div>
+                    <div class="bg-primary-light p-6 rounded-xl border border-accent-orange/50">
+                        <h2 class="text-2xl font-semibold mb-4 text-accent-orange flex items-center space-x-2"><i data-lucide="gap" class="w-6 h-6"></i><span>Critical Knowledge Gaps Identified by AI</span></h2>
+                        <ul class="list-disc list-inside space-y-2 text-gray-300 ml-4">${knowledgeGaps.map(gap => `<li>${gap}</li>`).join('')}</ul>
+                    </div>
+                </div>`;
+        }
+        function renderMissionPlanner(selectedRisk = null, selectedMission = null, selectedDuration = null) {
+            // selectedRisk / selectedMission / selectedDuration are optional and come from UI controls.
+            // Provide sensible defaults when not supplied.
+            const primaryRisk = selectedRisk || (metricsData && Array.isArray(metricsData.keyTopics) && metricsData.keyTopics[0]) || "Radiation";
+            const missionType = selectedMission || "Ground Sim";
+            const missionDuration = selectedDuration || "2+ Years";
+
+            // --- 2. FILTER DATA ---
+            // Use normalized 'keyword' or 'keywordsArray' fields (case-insensitive)
+            const relevantStudies = studiesData.filter(study => {
+                const kwMatch = (study.keyword && study.keyword.toLowerCase() === primaryRisk.toLowerCase())
+                    || (Array.isArray(study.keywordsArray) && study.keywordsArray.some(k => k.toLowerCase() === primaryRisk.toLowerCase()));
+                const missionMatch = (study.mission || '').toString() === missionType;
+                return kwMatch && missionMatch;
+            });
+
+            const successfulCountermeasures = relevantStudies.filter(study => study.outcome === 'positive');
+
+            // --- 3. GENERATE DYNAMIC CONTENT ---
+            const scenarioSummary = `Analysis of <strong>${primaryRisk}</strong> risk for <strong>${missionType}</strong> missions: A total of <strong>${relevantStudies.length}</strong> relevant studies were identified. Of these, <strong>${successfulCountermeasures.length}</strong> presented positive outcomes.`;
+
+            // Build countermeasures HTML
+            let countermeasuresHtml = '';
+            if (successfulCountermeasures.length > 0) {
+                countermeasuresHtml = `<ul class="space-y-4">` + successfulCountermeasures.map(study => `
+                    <li class="flex items-start space-x-3 bg-nasa-navy p-3 rounded-lg border border-gray-700/50">
+                        <i data-lucide="check-circle" class="w-5 h-5 text-green-400 mt-1 flex-shrink-0"></i>
+                        <p class="text-gray-200"><strong>${escapeHtml(study.title)} (Study ${study.id}):</strong> This study reported a <em>${escapeHtml(study.outcome)}</em> approach to mitigate ${escapeHtml(primaryRisk)} risks.</p>
+                    </li>`).join('') + `</ul>`;
+            } else {
+                countermeasuresHtml = `<div class="flex items-center space-x-3 bg-nasa-navy p-4 rounded-lg border border-accent-orange/50"><i data-lucide="alert-triangle" class="w-5 h-5 text-accent-orange flex-shrink-0"></i><p>No studies with positive outcomes found for this scenario. Further research is needed.</p></div>`;
+            }
+
+            // --- 4. ASSEMBLE THE FINAL HTML ---
+            // Build risk options from metricsData.keyTopics when available
+            const riskOpts = (metricsData && Array.isArray(metricsData.keyTopics) && metricsData.keyTopics.length) ? metricsData.keyTopics : ['Radiation','Microgravity','Isolation'];
+
+            const plannerHtml = `
+                <div class="max-w-7xl mx-auto p-4 md:p-8 space-y-10">
+                    <div class="flex items-center space-x-3">
+                        <i data-lucide="compass" class="w-10 h-10 text-accent-orange"></i>
+                        <div>
+                            <h1 class="text-4xl font-extrabold text-accent-orange">Mission Planner</h1>
+                            <p class="text-gray-400">AI-driven risk and countermeasure synthesis for mission architects.</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-primary-light p-6 rounded-xl border border-accent-orange/50 shadow-lg">
+                        <h2 class="text-xl font-semibold mb-4 text-white">Mission Scenario Filter</h2>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div>
+                                <label class="text-sm font-medium text-gray-400">Primary Risk</label>
+                                <select id="planner-risk-select" class="w-full mt-1 p-2 rounded bg-nasa-navy border border-gray-700 text-gray-200 focus:ring-accent-orange focus:border-accent-orange">
+                                    ${riskOpts.map(opt => `<option value="${escapeHtml(opt)}" ${opt === primaryRisk ? 'selected' : ''}>${escapeHtml(opt)}</option>`).join('')}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="text-sm font-medium text-gray-400">Mission Type</label>
+                                <select id="planner-mission-select" class="w-full mt-1 p-2 rounded bg-nasa-navy border border-gray-700 text-gray-200 focus:ring-accent-orange focus:border-accent-orange">
+                                    <option ${missionType === 'Ground Sim' ? 'selected' : ''}>Ground Sim</option>
+                                    <option ${missionType === 'ISS' ? 'selected' : ''}>ISS</option>
+                                    <option ${missionType === 'Mars Analog' ? 'selected' : ''}>Mars Analog</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="text-sm font-medium text-gray-400">Mission Duration</label>
+                                <select id="planner-duration-select" class="w-full mt-1 p-2 rounded bg-nasa-navy border border-gray-700 text-gray-200 focus:ring-accent-orange focus:border-accent-orange">
+                                    <option ${missionDuration === '2+ Years' ? 'selected' : ''}>2+ Years</option>
+                                    <option ${missionDuration === '6-12 Months' ? 'selected' : ''}>6-12 Months</option>
+                                </select>
+                            </div>
+                        </div>
+                        <button onclick="runMissionAnalysis()" class="mt-4 py-2 px-6 rounded-lg bg-accent-orange text-nasa-navy font-bold transition hover:bg-accent-orange/80 shadow-lg hover:shadow-glow-orange">Run New Analysis</button>
+                    </div>
+
+                    <div class="bg-primary-light p-6 rounded-xl border border-gray-700/50">
+                        <h2 class="text-2xl font-semibold mb-4 text-accent-cyan flex items-center space-x-2"><i data-lucide="brain-circuit" class="w-6 h-6"></i><span>AI-Curated Summary</span></h2>
+                        <div class="text-gray-200 leading-relaxed italic border-l-4 border-accent-cyan pl-4">${scenarioSummary}</div>
+                        <p class="mt-4 text-sm text-gray-500">Source: Synthesis of ${studiesData.length} records. Last updated: Oct 2025.</p>
+                    </div>
+
+                    <div class="bg-primary-light p-6 rounded-xl border border-gray-700/50">
+                        <h2 class="text-2xl font-semibold mb-4 text-white flex items-center space-x-2"><i data-lucide="shield-check" class="w-6 h-6"></i><span>Suggested Countermeasures & Supporting Studies</span></h2>
+                        ${countermeasuresHtml}
+                    </div>
+                </div>
+            `;
+
+            return plannerHtml;
+        }
+
+    // --- RAG Chatbot Logic ---
+    let assistantMessages = [{ sender: 'bot', text: "Hello! Ask me anything about space biology. Choose a response style and search source below." }];
+    let assistantPersona = 'student';
+    let isAssistantLoading = false;
+    let assistantSearchMode = 'local';
+
+    function toggleAssistant() { 
+        document.getElementById('ai-assistant').classList.toggle('hidden'); 
+        renderAssistantMessages();
+    }
+
+    function renderAssistantMessages() {
+        const container = document.getElementById('assistant-messages');
+        if (!container) return;
+        let messagesHtml = assistantMessages.map(msg => {
+            const alignClass = msg.sender === 'user' ? 'justify-end' : 'justify-start';
+            const colorClass = msg.sender === 'user' ? 'bg-accent-cyan text-nasa-navy' : 'bg-primary-light';
+            let text = escapeHtml(msg.text).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/Sources used:/g, '<br><strong class="mt-2 block">Sources used:</strong>').replace(/\* (.*?)(?=\n|$)/g, '<li class="ml-4 list-disc">$1</li>');
+            return `<div class="flex ${alignClass}"><div class="p-3 rounded-lg max-w-[85%] ${colorClass} text-sm">${text}</div></div>`;
+        }).join('');
+        
+        const lastMessage = assistantMessages[assistantMessages.length - 1];
+        if (lastMessage?.sender === 'bot' && lastMessage.webSources?.length > 0) {
+            messagesHtml += `<div class="flex justify-start"><div class="p-3 rounded-lg max-w-[85%] bg-primary-light text-sm"><strong class="mt-2 block">Web Sources:</strong><ul class="list-disc list-inside">${lastMessage.webSources.map(s => `<li><a href="${s.uri}" target="_blank" class="text-accent-cyan hover:underline">${escapeHtml(s.title)}</a></li>`).join('')}</ul></div></div>`;
+        }
+        container.innerHTML = messagesHtml;
+
+        if (isAssistantLoading) {
+            container.innerHTML += `<div class="flex justify-start"><div class="p-3 rounded-lg bg-primary-light text-sm">Thinking...</div></div>`;
+        }
+        container.scrollTop = container.scrollHeight;
+    }
+
+    function getRelevantSources(query) {
+        const stopWords = new Set(['a', 'an', 'the', 'in', 'on', 'of', 'for', 'to', 'how', 'what', 'when', 'where', 'why', 'do', 'does', 'is', 'are', 'and', 'about', 'affect']);
+        const queryKeywords = query.toLowerCase().split(/\s+/).filter(word => word.length > 2 && !stopWords.has(word));
+        
+        if (queryKeywords.length === 0) return [];
+
+        const scoredStudies = studiesData.map(study => {
+            const titleText = (study.title || '').toLowerCase();
+            const contentText = `${study.summary || ''} ${study.abstract || ''} ${(study.keywordsArray || []).join(' ')}`.toLowerCase();
+            
+            let score = 0;
+            
+            queryKeywords.forEach(keyword => {
+                if (titleText.includes(keyword)) {
+                    score += 3;
+                }
+                if (contentText.includes(keyword)) {
+                    score += 1;
+                }
+            });
+            return { ...study, score };
+        });
+
+        return scoredStudies.filter(study => study.score > 0).sort((a, b) => b.score - a.score).slice(0, 7);
+    }
+
+    
+async function askAssistant() {
+    const input = document.getElementById('assistant-input');
+    const userQuery = input ? input.value.trim() : '';
+    if (!userQuery || isAssistantLoading) return;
+
+    // push user message locally so UI updates immediately
+    assistantMessages.push({ sender: 'user', text: userQuery });
+    if (input) input.value = '';
+
+    isAssistantLoading = true;
+    renderAssistantMessages();
+
+    // Build RAG context from local index (frontend helper)
+    const relevantSources = getRelevantSources(userQuery);
+    const contextDocs = relevantSources.map(pub => ({
+        title: pub.title || (`Study ${pub.id}`),
+        pubUrl: pub.pubUrl || extractPublicationUrl(pub) || pub.url || '',
+        summary: pub.summary || pub.abstract || pub.summary || ''
+    }));
+
+    try {
+        const resp = await fetch('/api/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: userQuery,
+                persona: assistantPersona,
+                searchMode: assistantSearchMode,
+                contextDocs
+            })
+        });
+
+        const j = await resp.json();
+
+        if (!resp.ok) {
+            const errText = j && j.error ? (j.error + (j.details ? ' — ' + JSON.stringify(j.details) : '')) : 'Unknown server error';
+            assistantMessages.push({ sender: 'bot', text: `Error: ${errText}` });
+        } else {
+            const answer = j.answer || (j.raw ? JSON.stringify(j.raw, null, 2) : 'No answer received.');
+            assistantMessages.push({ sender: 'bot', text: String(answer), webSources: j.webSources || [] });
+        }
+    } catch (err) {
+        console.error('Chat request failed', err);
+        assistantMessages.push({ sender: 'bot', text: 'Network or server error: ' + (err.message || err) });
+    } finally {
+        isAssistantLoading = false;
+        renderAssistantMessages();
+    }
+}
+
+
+
+        // Read the Mission Planner UI selects and re-render the planner with chosen options.
+        function runMissionAnalysis() {
+            const riskSel = document.getElementById('planner-risk-select');
+            const missionSel = document.getElementById('planner-mission-select');
+            const durationSel = document.getElementById('planner-duration-select');
+            const risk = riskSel ? riskSel.value : null;
+            const mission = missionSel ? missionSel.value : null;
+            const duration = durationSel ? durationSel.value : null;
+            // Re-render the mission planner into the content area
+            const contentArea = document.getElementById('content-area');
+            if (contentArea) {
+                contentArea.innerHTML = renderMissionPlanner(risk, mission, duration);
+                lucide.createIcons();
+            }
+        }
+
+        // --- Initialization ---
+        function computeMetricsFromStudies(studies) {
+            const metrics = {
+                totalStudies: studies.length,
+                totalExperiments: studies.length,
+                keyTopics: [],
+                featuredInsights: [],
+                timeline: {},
+                consensusHeatmap: [
+                    { topic: 'Radiation', consensus: 62, contradiction: 38 },
+                    { topic: 'Microgravity', consensus: 70, contradiction: 30 },
+                    { topic: 'Bone Loss', consensus: 58, contradiction: 42 }
+                ]
+            };
+
+            const topicCounts = {};
+            studies.forEach(s => {
+                if (Number.isFinite(s.year) && s.year > 0) {
+                    metrics.timeline[s.year] = (metrics.timeline[s.year] || 0) + 1;
+                }
+                if (s.keyword) {
+                    topicCounts[s.keyword] = (topicCounts[s.keyword] || 0) + 1;
+                }
+            });
+
+            metrics.keyTopics = Object.entries(topicCounts)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 6)
+                .map(([k]) => k);
+
+            metrics.featuredInsights = [
+                { text: `Most studied topic: ${metrics.keyTopics[0] || 'Microgravity'}`, icon: 'trophy' },
+                { text: 'Knowledge gap: Long-duration radiation countermeasures', icon: 'alert-triangle' },
+                { text: 'Emerging: Immune modulation under microgravity', icon: 'sparkles' }
+            ];
+
+            if (Object.keys(metrics.timeline).length === 0) {
+                const now = new Date().getFullYear();
+                for (let y = now - 5; y <= now; y++) metrics.timeline[y] = Math.floor(Math.random() * 10) + 1;
+            }
+
+            return metrics;
+        }
+
+        function normalizeStudies(rawArray) {
+            return rawArray.map((r, idx) => {
+                const id = Number.isFinite(r.id) ? r.id : idx + 1;
+                const title = r.Title || r.title || `Study ${id}`;
+                // keep full summary or abstract text
+                const summary = r.Summary || r.summary || (r.Abstract || '');
+                const year = Number.isFinite(r.year) ? r.year : (parseInt(r.year, 10) || 0);
+                const keywordsText = (r.keywords || r.keyWords || r.Keyword || '');
+                const keywordsRaw = String(keywordsText || '');
+                const keywordsArray = keywordsRaw.split(/[;,|\/]+/).map(k => k.trim()).filter(Boolean);
+                const firstKeyword = keywordsArray[0] || 'Microgravity';
+                const typeRaw = (r.type || '').toString();
+                const type = typeRaw.toLowerCase().includes('human') ? 'human'
+                    : typeRaw.toLowerCase().includes('plant') ? 'plant'
+                    : typeRaw.toLowerCase().includes('microb') ? 'microbial'
+                    : 'animal';
+                const mission = (r.mission || '').toString();
+                let outcome = 'inconclusive';
+                const outcomeRaw = (r.outcome || '').toString().toLowerCase();
+                if (outcomeRaw.includes('increase') || outcomeRaw.includes('improve') || outcomeRaw.includes('successful')) outcome = 'positive';
+                if (outcomeRaw.includes('contradict') || outcomeRaw.includes('no significant') || outcomeRaw.includes('not')) outcome = 'contradictory';
+
+                return {
+                    id,
+                    title,
+                    summary,
+                    abstract: r.Abstract || r.abstract || summary,
+                    year,
+                    keyword: firstKeyword,
+                    keywordsRaw,
+                    keywordsArray,
+                    type,
+                    mission,
+                    outcome
+                    ,
+                    // Prefer explicit image_path from data.json when available; otherwise guess.
+                    image: normalizeImagePath(r, id, title)
+                    ,
+                    // publication URL (if present in the raw record)
+                    pubUrl: extractPublicationUrl(r)
+                };
+            });
+        }
+
+        async function initializeApp() {
+            try {
+                const response = await fetch('data.json');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+
+                if (Array.isArray(data)) {
+                    const normalized = normalizeStudies(data);
+                    studiesData = normalized;
+                    metricsData = computeMetricsFromStudies(normalized);
+                    // Attempt to resolve image files for each study so thumbnails appear when available
+                    await resolveStudyImages(studiesData);
+                } else {
+                    studiesData = data.studies || [];
+                    metricsData = data.metrics || {};
+                    if (!metricsData.timeline) {
+                        metricsData = Object.assign({}, metricsData, computeMetricsFromStudies(studiesData));
+                    }
+                }
+
+                // Try to load a precomputed allowed keyword list from allowed_keywords.txt
+                // If not available, fall back to building allowedKeywords from studiesData (unique, trimmed)
+                try {
+                    const kwResp = await fetch('allowed_keywords.txt');
+                    if (kwResp.ok) {
+                        const text = await kwResp.text();
+                        // split into lines, trim, filter empty
+                        allowedKeywords = text.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+                    } else {
+                        // fallback: build from studiesData
+                        const kws = new Set();
+                        (studiesData || []).forEach(s => {
+                            const raw = (s.keywords || s.keyword || '');
+                            if (raw && typeof raw === 'string') {
+                                raw.split(/[;,|]+/).map(k => k.trim()).filter(Boolean).forEach(k => kws.add(k));
+                            }
+                        });
+                        allowedKeywords = Array.from(kws).sort((a,b)=> a.localeCompare(b));
+                    }
+                } catch (kwErr) {
+                    // network/file error - fallback to building from studiesData
+                    const kws = new Set();
+                    (studiesData || []).forEach(s => {
+                        const raw = (s.keywords || s.keyword || '');
+                        if (raw && typeof raw === 'string') {
+                            raw.split(/[;,|]+/).map(k => k.trim()).filter(Boolean).forEach(k => kws.add(k));
+                        }
+                    });
+                    allowedKeywords = Array.from(kws).sort((a,b)=> a.localeCompare(b));
+                }
+                // initialize the dashboard search UI
+                setupDashboardSearch();
+
+                // Now that data is loaded, check the URL hash and render the correct page
+                if (window.location.hash) {
+                    const parts = window.location.hash.substring(1).split('/');
+                    const page = parts[0];
+                    const id = parts.length > 1 ? parseInt(parts[1]) : null;
+                    navigate(page, id);
+                } else {
+                    renderApp();
+                }
+            } catch (error) {
+                console.error('Failed to load bioscience data:', error);
+                document.getElementById('content-area').innerHTML = `<div class="p-8 text-center text-red-400">Error: Could not load data from data.json. Please check the file exists and the console for details.</div>`;
+            }
+        }
+        
+        window.onload = initializeApp;
+
+    </script>
+
+    <div class="min-h-screen flex flex-col">
+        <header class="bg-primary-light shadow-lg sticky top-0 z-50 border-b border-primary-light/50">
+            <div class="max-w-8xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center h-16">
+                    <div class="flex-shrink-0 flex items-center"><i data-lucide="rocket" class="w-6 h-6 text-accent-orange mr-2"></i><span class="text-xl font-bold text-white tracking-widest">NASA BIOSCIENCE</span></div>
+                    <nav class="flex space-x-4 md:space-x-8 h-full">
+                        <button id="nav-dashboard" class="nav-link flex items-center px-1 pt-1 text-sm font-medium text-gray-400 hover:text-white transition duration-150" onclick="navigate('dashboard')"><i data-lucide="layout-dashboard" class="w-5 h-5 mr-1 hidden sm:block"></i> Dashboard Insights</button>
+                        <button id="nav-explore" class="nav-link flex items-center px-1 pt-1 text-sm font-medium text-gray-400 hover:text-white transition duration-150" onclick="navigate('explore')"><i data-lucide="search" class="w-5 h-5 mr-1 hidden sm:block"></i> Explore Studies</button>
+                        <button id="nav-graph" class="nav-link flex items-center px-1 pt-1 text-sm font-medium text-gray-400 hover:text-white transition duration-150" onclick="navigate('graph')"><i data-lucide="git-branch" class="w-5 h-5 mr-1 hidden sm:block"></i> Knowledge Graph</button>
+                        <button id="nav-mission" class="nav-link flex items-center px-1 pt-1 text-sm font-medium text-gray-400 hover:text-white transition duration-150" onclick="navigate('mission')"><i data-lucide="compass" class="w-5 h-5 mr-1 hidden sm:block"></i> Mission Planning</button>
+                    </nav>
+                    <div class="flex items-center space-x-4">
+                        <button class="text-gray-400 hover:text-accent-cyan transition duration-150" title="Save Collections"><i data-lucide="bookmark" class="w-5 h-5"></i></button>
+                        <button class="bg-accent-cyan p-2 rounded-full text-nasa-navy hover:shadow-glow-cyan transition" title="AI Q&A Assistant" onclick="toggleAssistant()"><i data-lucide="bot" class="w-5 h-5"></i></button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <main id="content-area" class="flex-grow overflow-y-auto"></main>
+
+        <div id="ai-assistant" class="hidden fixed bottom-4 right-4 w-96 h-[70vh] max-h-[600px] bg-nasa-navy/90 backdrop-blur-sm border border-primary-light rounded-lg shadow-2xl flex flex-col z-50 transition-all">
+            <div class="p-4 border-b border-primary-light flex justify-between items-center">
+                <h3 class="font-semibold text-white flex items-center space-x-2"><i data-lucide="bot" class="w-5 h-5 text-accent-cyan"></i><span>AI Assistant</span></h3>
+                <button class="text-gray-400 hover:text-white" onclick="toggleAssistant()"><i data-lucide="x" class="w-5 h-5"></i></button>
+            </div>
+            <div id="assistant-messages" class="flex-1 p-4 overflow-y-auto space-y-4"></div>
+            <div class="p-3 border-t border-primary-light text-sm space-y-3">
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <h4 class="text-gray-400 font-medium mb-1 text-left">Search Source</h4>
+                        <div class="flex flex-col space-y-1 text-left">
+                            <label class="cursor-pointer text-gray-300 hover:bg-primary-light p-1 rounded-md transition"><input type="radio" name="search-mode" value="local" class="mr-2" checked onchange="assistantSearchMode = 'local'"> Local Data</label>
+                            <label class="cursor-pointer text-gray-300 hover:bg-primary-light p-1 rounded-md transition"><input type="radio" name="search-mode" value="web" class="mr-2" onchange="assistantSearchMode = 'web'"> Web Search</label>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 class="text-gray-400 font-medium mb-1 text-left">Response Style</h4>
+                        <div class="flex flex-col space-y-1 text-left">
+                            <label class="cursor-pointer text-gray-300 hover:bg-primary-light p-1 rounded-md transition"><input type="radio" name="persona" value="student" class="mr-2" checked onchange="assistantPersona = 'student'"> Simple</label>
+                            <label class="cursor-pointer text-gray-300 hover:bg-primary-light p-1 rounded-md transition"><input type="radio" name="persona" value="researcher" class="mr-2" onchange="assistantPersona = 'researcher'"> Detailed</label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="p-4 border-t border-primary-light">
+                <div class="relative flex items-center">
+                    <input id="assistant-input" type="text" placeholder="Ask about research..." onkeypress="if(event.key === 'Enter') askAssistant()" class="w-full pl-4 pr-12 py-2 rounded-full bg-primary-light border border-primary-dark focus:ring-2 focus:ring-accent-cyan transition text-gray-200">
+                    <button class="absolute inset-y-0 right-0 flex items-center justify-center px-4 text-gray-400 hover:text-accent-cyan" onclick="askAssistant()"><i data-lucide="send" class="w-5 h-5"></i></button>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
