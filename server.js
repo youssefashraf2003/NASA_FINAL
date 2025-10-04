@@ -14,7 +14,7 @@ app.use(express.json({ limit: '512kb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Load local knowledge base
+// Load local knowledge base from data.json
 const dataPath = path.join(__dirname, 'data.json');
 let localDocs = [];
 if (fs.existsSync(dataPath)) {
@@ -37,29 +37,66 @@ function extractTextFromGenAIResponse(data) {
   }
 }
 
+// Endpoint for performing web searches
+app.post('/api/search', async (req, res) => {
+  const { query } = req.body;
+  if (!query) {
+    return res.status(400).json({ error: 'Missing query' });
+  }
+  try {
+    const searchResults = await google_search.search(queries=[query]);
+    if (searchResults && searchResults[0].results) {
+      const formattedResults = searchResults[0].results.map(r => ({
+        Title: r.source_title,
+        URL: r.url,
+        Summary: r.snippet
+      }));
+      return res.json(formattedResults);
+    }
+    res.json([]);
+  } catch (error) {
+    console.error('Web search error:', error);
+    res.status(500).json({ error: 'Failed to perform web search' });
+  }
+});
+
+
 app.post('/api/chat', async (req, res) => {
-  const { query, persona, searchMode, contextDocs, context } = req.body || {};
+  const { query, persona, searchMode, contextDocs } = req.body || {};
   if (!query) return res.status(400).json({ error: 'Missing query in request body' });
+
+  // Handle off-topic greetings
+  const lowerCaseQuery = query.toLowerCase().trim();
+  const greetings = ['hello', 'hi', 'hey', 'howdy'];
+  if (greetings.includes(lowerCaseQuery)) {
+    return res.json({ answer: 'Hello! I am a chatbot designed to answer questions about space biology. Ask me anything about the subject.', sources: [] });
+  }
 
   const apiKey = process.env.GEMINI_KEY;
   if (!apiKey) return res.status(500).json({ error: 'Server not configured: set GEMINI_KEY in .env' });
 
-  // Persona instruction
   const personaInstruction = persona === 'student'
-    ? 'You are a helpful assistant for space biology. Explain concepts simply.'
-    : 'You are a helpful technical assistant for space biology. Provide precise, technical answers.';
+    ? 'You are a helpful assistant for space biology. Explain concepts simply and keep your entire response brief. After your response, you MUST list the URLs of the sources you used from the context under a "Sources:" heading.'
+    : 'You are a helpful technical assistant for space biology. Provide a comprehensive, precise, and detailed technical answer. After your response, you MUST list the URLs of the sources you used from the context under a "Sources:" heading.';
 
-  // Context depending on mode
-  let ctxText;
-  if (searchMode === "local") {
-    ctxText = localDocs.map(d => `Title: ${d.title}\nSummary: ${d.summary}`).join("\n\n---\n\n");
-  } else {
-    ctxText = Array.isArray(contextDocs) && contextDocs.length
-      ? contextDocs.map(d => `Title: ${d.title}\nSummary: ${d.summary}`).join("\n\n---\n\n")
-      : (context || "Use your general knowledge about space biology.");
+  let ctxText = "Use your general knowledge about space biology.";
+  let sources = [];
+
+  // **FIXED LOGIC**: This block now correctly processes the context sent from the browser for both local and web searches.
+  if (Array.isArray(contextDocs) && contextDocs.length > 0) {
+      // Normalize the keys from the browser (handles 'title'/'Title', 'pubUrl'/'URL', etc.)
+      const normalizedDocs = contextDocs.map(doc => ({
+          Title: doc.title || doc.Title || 'Unknown Source',
+          URL: doc.pubUrl || doc.URL,
+          Summary: doc.summary || doc.Summary || ''
+      })).filter(doc => doc.URL); // Only include docs that have a URL
+
+      if (normalizedDocs.length > 0) {
+        ctxText = normalizedDocs.map(d => `Title: ${d.Title}\nURL: ${d.URL}\nSummary: ${d.Summary}`).join("\n\n---\n\n");
+        sources = normalizedDocs.map(d => ({ URL: d.URL, Title: d.Title }));
+      }
   }
 
-  // Payload for Gemini
   const payload = {
     contents: [
       {
@@ -72,19 +109,23 @@ app.post('/api/chat', async (req, res) => {
     ]
   };
 
-  const model = process.env.GEMINI_MODEL || "gemini-2.5-pro";
+  const model = process.env.GEMINI_MODEL || "gemini-1.5-pro";
   const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${apiKey}`;
 
   try {
     const gRes = await axios.post(url, payload, {
       headers: { 'Content-Type': 'application/json' },
-      timeout: 25000
+      timeout: 60000 
     });
     const data = gRes.data;
     const answer = extractTextFromGenAIResponse(data) || 'Model returned no answer.';
-    return res.json({ answer });
+    // Return the answer and the correctly populated sources array
+    return res.json({ answer, sources });
   } catch (err) {
     console.error('Upstream API error:', err.response ? err.response.data : err.message);
+    if (err.code === 'ECONNABORTED') {
+        return res.status(504).json({ error: 'Upstream API request timed out.', details: 'The model took too long to respond.' });
+    }
     return res.status(502).json({ error: 'Upstream API error', details: err.response ? err.response.data : err.message });
   }
 });

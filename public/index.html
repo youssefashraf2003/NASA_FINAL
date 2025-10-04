@@ -67,9 +67,9 @@
         // --- Global variables to hold data fetched from JSON ---
         let studiesData = [];
         let metricsData = {};
-    // Search state: only allow searches from this allowedKeywords list
-    let searchKeyword = '';
-    let allowedKeywords = [];
+		// Search state: only allow searches from this allowedKeywords list
+		let searchKeyword = '';
+		let allowedKeywords = [];
 
         // --- Core Navigation and Rendering ---
 
@@ -280,8 +280,8 @@
                             <h2 class="text-xl font-semibold mb-4 border-b border-gray-700 pb-2">Filter Library</h2>
                             <div class="mb-5">
                                 <label class="block text-gray-300 mb-2">Year Range (2010 - 2024)</label>
-                                <input type="range" min="2010" max="2024" value="2024" class="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer range-lg focus:outline-none focus:ring-2 focus:ring-accent-cyan" id="filter-year" oninput="document.getElementById('year-label').innerText = this.value">
-                                <div class="flex justify-between text-sm text-gray-400 mt-1"><span>2010</span><span id="year-label">2024</span></div>
+                                <input type="range" min="1996" max="2024" value="2024" class="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer range-lg focus:outline-none focus:ring-2 focus:ring-accent-cyan" id="filter-year" oninput="document.getElementById('year-label').innerText = this.value">
+                                <div class="flex justify-between text-sm text-gray-400 mt-1"><span>1996</span><span id="year-label">2024</span></div>
                             </div>
                             <div class="mb-5">
                                 <label class="block text-gray-300 mb-2">Experiment Type</label>
@@ -1056,66 +1056,66 @@
             return plannerHtml;
         }
 
-    // --- RAG Chatbot Logic ---
-    let assistantMessages = [{ sender: 'bot', text: "Hello! Ask me anything about space biology. Choose a response style and search source below." }];
-    let assistantPersona = 'student';
-    let isAssistantLoading = false;
-    let assistantSearchMode = 'local';
+        // --- RAG Chatbot Logic ---
+		let assistantMessages = [{ sender: 'bot', text: "Hello! Ask me anything about space biology. Choose a response style and search source below." }];
+		let assistantPersona = 'student';
+		let isAssistantLoading = false;
+		let assistantSearchMode = 'local';
 
-    function toggleAssistant() { 
-        document.getElementById('ai-assistant').classList.toggle('hidden'); 
-        renderAssistantMessages();
-    }
-
-    function renderAssistantMessages() {
-        const container = document.getElementById('assistant-messages');
-        if (!container) return;
-        let messagesHtml = assistantMessages.map(msg => {
-            const alignClass = msg.sender === 'user' ? 'justify-end' : 'justify-start';
-            const colorClass = msg.sender === 'user' ? 'bg-accent-cyan text-nasa-navy' : 'bg-primary-light';
-            let text = escapeHtml(msg.text).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/Sources used:/g, '<br><strong class="mt-2 block">Sources used:</strong>').replace(/\* (.*?)(?=\n|$)/g, '<li class="ml-4 list-disc">$1</li>');
-            return `<div class="flex ${alignClass}"><div class="p-3 rounded-lg max-w-[85%] ${colorClass} text-sm">${text}</div></div>`;
-        }).join('');
-        
-        const lastMessage = assistantMessages[assistantMessages.length - 1];
-        if (lastMessage?.sender === 'bot' && lastMessage.webSources?.length > 0) {
-            messagesHtml += `<div class="flex justify-start"><div class="p-3 rounded-lg max-w-[85%] bg-primary-light text-sm"><strong class="mt-2 block">Web Sources:</strong><ul class="list-disc list-inside">${lastMessage.webSources.map(s => `<li><a href="${s.uri}" target="_blank" class="text-accent-cyan hover:underline">${escapeHtml(s.title)}</a></li>`).join('')}</ul></div></div>`;
+        function toggleAssistant() { 
+            document.getElementById('ai-assistant').classList.toggle('hidden'); 
+            renderAssistantMessages();
         }
-        container.innerHTML = messagesHtml;
 
-        if (isAssistantLoading) {
-            container.innerHTML += `<div class="flex justify-start"><div class="p-3 rounded-lg bg-primary-light text-sm">Thinking...</div></div>`;
+        function renderAssistantMessages() {
+            const container = document.getElementById('assistant-messages');
+            if (!container) return;
+            let messagesHtml = assistantMessages.map(msg => {
+                const alignClass = msg.sender === 'user' ? 'justify-end' : 'justify-start';
+                const colorClass = msg.sender === 'user' ? 'bg-accent-cyan text-nasa-navy' : 'bg-primary-light';
+                let text = escapeHtml(msg.text).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/Sources used:/g, '<br><strong class="mt-2 block">Sources used:</strong>').replace(/\* (.*?)(?=\n|$)/g, '<li class="ml-4 list-disc">$1</li>');
+                return `<div class="flex ${alignClass}"><div class="p-3 rounded-lg max-w-[85%] ${colorClass} text-sm">${text}</div></div>`;
+            }).join('');
+            
+            const lastMessage = assistantMessages[assistantMessages.length - 1];
+            if (lastMessage?.sender === 'bot' && lastMessage.webSources?.length > 0) {
+                messagesHtml += `<div class="flex justify-start"><div class="p-3 rounded-lg max-w-[85%] bg-primary-light text-sm"><strong class="mt-2 block">Web Sources:</strong><ul class="list-disc list-inside">${lastMessage.webSources.map(s => `<li><a href="${s.uri}" target="_blank" class="text-accent-cyan hover:underline">${escapeHtml(s.title)}</a></li>`).join('')}</ul></div></div>`;
+            }
+            container.innerHTML = messagesHtml;
+
+            if (isAssistantLoading) {
+                container.innerHTML += `<div class="flex justify-start"><div class="p-3 rounded-lg bg-primary-light text-sm">Thinking...</div></div>`;
+            }
+            container.scrollTop = container.scrollHeight;
         }
-        container.scrollTop = container.scrollHeight;
-    }
 
-    function getRelevantSources(query) {
-        const stopWords = new Set(['a', 'an', 'the', 'in', 'on', 'of', 'for', 'to', 'how', 'what', 'when', 'where', 'why', 'do', 'does', 'is', 'are', 'and', 'about', 'affect']);
-        const queryKeywords = query.toLowerCase().split(/\s+/).filter(word => word.length > 2 && !stopWords.has(word));
-        
-        if (queryKeywords.length === 0) return [];
+        function getRelevantSources(query) {
+            const stopWords = new Set(['a', 'an', 'the', 'in', 'on', 'of', 'for', 'to', 'how', 'what', 'when', 'where', 'why', 'do', 'does', 'is', 'are', 'and', 'about', 'affect']);
+            const queryKeywords = query.toLowerCase().split(/\s+/).filter(word => word.length > 2 && !stopWords.has(word));
+            
+            if (queryKeywords.length === 0) return [];
 
-        const scoredStudies = studiesData.map(study => {
-            const titleText = (study.title || '').toLowerCase();
-            const contentText = `${study.summary || ''} ${study.abstract || ''} ${(study.keywordsArray || []).join(' ')}`.toLowerCase();
-            
-            let score = 0;
-            
-            queryKeywords.forEach(keyword => {
-                if (titleText.includes(keyword)) {
-                    score += 3;
-                }
-                if (contentText.includes(keyword)) {
-                    score += 1;
-                }
+            const scoredStudies = studiesData.map(study => {
+                const titleText = (study.title || '').toLowerCase();
+                const contentText = `${study.summary || ''} ${study.abstract || ''} ${(study.keywordsArray || []).join(' ')}`.toLowerCase();
+                
+                let score = 0;
+                
+                queryKeywords.forEach(keyword => {
+                    if (titleText.includes(keyword)) {
+                        score += 3;
+                    }
+                    if (contentText.includes(keyword)) {
+                        score += 1;
+                    }
+                });
+                return { ...study, score };
             });
-            return { ...study, score };
-        });
 
-        return scoredStudies.filter(study => study.score > 0).sort((a, b) => b.score - a.score).slice(0, 7);
-    }
+            return scoredStudies.filter(study => study.score > 0).sort((a, b) => b.score - a.score).slice(0, 7);
+        }
 
-    
+        
 async function askAssistant() {
     const input = document.getElementById('assistant-input');
     const userQuery = input ? input.value.trim() : '';
